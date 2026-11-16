@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leitor de NF</title>
+<script src="zxing-reader.js"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#f6f6f4; --card:#fff; --tx:#1b1b1a; --mut:#6b6b66; --bd:#dcdcd6; --ac:#1f6feb; --ok:#1a7f37; --warn:#b35900; --err:#c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --card:#222221; --tx:#f1f1ee; --mut:#a2a29b; --bd:#3a3a37; --ac:#5b9dff; --ok:#4cc26b; --warn:#f0a050; --err:#ff7b72; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:var(--bg); color:var(--tx); padding:16px; max-width:640px; margin-inline:auto; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  p.sub { margin:0 0 14px; color:var(--mut); font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:14px; margin-bottom:14px; }
+  .btn { display:block; width:100%; text-align:center; padding:16px; font-size:17px; font-weight:600; border-radius:12px; border:0; background:var(--ac); color:#fff; cursor:pointer; }
+  .btn.sec { background:transparent; color:var(--ac); border:1.5px solid var(--ac); margin-top:10px; padding:12px; font-size:15px; }
+  .btn.sm { display:inline-block; width:auto; padding:8px 12px; font-size:14px; }
+  input[type=file] { display:none; }
+  .status { font-size:14px; margin-top:10px; min-height:20px; color:var(--mut); }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+  .count { font-size:15px; font-weight:600; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 0; border-top:1px solid var(--bd); }
+  li:first-child { border-top:0; }
+  .nf { font-variant-numeric:tabular-nums; font-size:18px; font-weight:600; }
+  .meta { font-size:12px; color:var(--mut); }
+  .tag { font-size:11px; padding:2px 6px; border-radius:6px; border:1px solid var(--warn); color:var(--warn); margin-left:6px; }
+  .x { background:none; border:0; color:var(--err); font-size:20px; padding:6px 10px; cursor:pointer; }
+  textarea { width:100%; min-height:70px; border:1px solid var(--bd); border-radius:10px; background:var(--bg); color:var(--tx); padding:10px; font-size:14px; font-family:ui-monospace,monospace; }
+  .empty { color:var(--mut); font-size:14px; padding:6px 0; }
+  .vwrap { position:relative; border-radius:12px; overflow:hidden; background:#000; display:none; margin-bottom:10px; aspect-ratio:4/3; }
+  .vwrap video { width:100%; height:100%; object-fit:cover; display:block; }
+  .aim { position:absolute; left:6%; right:6%; top:38%; height:24%; border:2px solid rgba(255,255,255,.85); border-radius:10px; pointer-events:none; }
+  .flash { position:absolute; left:0; right:0; bottom:0; padding:12px; text-align:center; font-size:22px; font-weight:700; color:#fff; background:rgba(26,127,55,.92); display:none; font-variant-numeric:tabular-nums; }
+  .flash.dup { background:rgba(110,110,105,.92); font-size:16px; }
+  .msg-ok { color:var(--ok); } .msg-err { color:var(--err); } .msg-warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<h1>Leitor de NF</h1>
+<p class="sub">Bipe o código de barras da nota. O app extrai o número da NF.</p>
+
+<div class="card">
+  <div class="vwrap" id="vwrap">
+    <video id="video" playsinline muted autoplay></video>
+    <div class="aim"></div>
+    <div class="flash" id="flash"></div>
+  </div>
+  <button class="btn" id="camToggle">▶ Ligar câmera e bipar</button>
+  <div class="status" id="status">Ligue a câmera e passe pelo código de barras de cada nota (as listras acima de “Chave de acesso”). Ao ler, o app apita e você já pode ir para a próxima.</div>
+</div>
+
+<div class="card">
+  <div class="meta" style="margin-bottom:8px">Sem câmera ao vivo? Use fotos:</div>
+  <label class="btn sec" for="cam" style="margin-top:0">📷 Tirar foto da nota</label>
+  <input id="cam" type="file" accept="image/*" capture="environment">
+  <label class="btn sec" for="gal">Escolher fotos da galeria</label>
+  <input id="gal" type="file" accept="image/*" multiple>
+</div>
+
+<div class="card">
+  <div class="row">
+    <span class="count" id="count">0 notas</span>
+    <span>
+      <button class="btn sm" id="copy">Copiar</button>
+      <button class="btn sm" id="clear" style="background:transparent;color:var(--err);border:1.5px solid var(--err)">Limpar</button>
+    </span>
+  </div>
+  <ul id="list"></ul>
+  <div class="empty" id="empty">Nenhuma nota lida ainda.</div>
+</div>
+
+<div class="card">
+  <div class="meta" style="margin-bottom:6px">Não leu a foto? Digite ou cole os 44 números da chave de acesso:</div>
+  <textarea id="manual" inputmode="numeric" placeholder="Chave de 44 dígitos"></textarea>
+  <button class="btn sec" id="addManual">Adicionar chave</button>
+</div>
+
+<script>
+(function () {
+  var items = []; // {key, nf, serie, dvok}
+  var KEY = 'leitor-nf-v1';
+  try { items = JSON.parse(localStorage.getItem(KEY) || '[]') || []; } catch (e) { items = []; }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var statusEl = $('status');
+
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(items)); } catch (e) {} }
+  function setStatus(txt, cls) { statusEl.className = 'status ' + (cls || ''); statusEl.textContent = txt; }
+
+  // Dígito verificador da chave (módulo 11, pesos 2..9 da direita para a esquerda)
+  function dvOk(key) {
+    var s = 0, w = 2;
+    for (var i = 42; i >= 0; i--) { s += parseInt(key[i], 10) * w; w = w === 9 ? 2 : w + 1; }
+    var r = s % 11, dv = r < 2 ? 0 : 11 - r;
+    return dv === parseInt(key[43], 10);
+  }
+  function parseKey(raw) {
+    var k = (raw || '').replace(/\D/g, '');
+    if (k.length !== 44) return null;
+    var n = k.substr(25, 9); // posições 26 a 34
+    return { key: k, serie: k.substr(22, 3), nf: n.substr(0, 3) + '.' + n.substr(3, 3) + '.' + n.substr(6, 3), dvok: dvOk(k) };
+  }
+
+  function render() {
+    var ul = $('list'); ul.innerHTML = '';
+    items.forEach(function (it, idx) {
+      var li = document.createElement('li');
+      var left = document.createElement('div');
+      var nf = document.createElement('div'); nf.className = 'nf'; nf.textContent = it.nf;
+      if (!it.dvok) { var t = document.createElement('span'); t.className = 'tag'; t.textContent = 'conferir'; nf.appendChild(t); }
+      var meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = 'série ' + it.serie;
+      left.appendChild(nf); left.appendChild(meta);
+      var x = document.createElement('button'); x.className = 'x'; x.textContent = '✕'; x.setAttribute('aria-label', 'Remover');
+      x.onclick = function () { items.splice(idx, 1); save(); render(); };
+      li.appendChild(left); li.appendChild(x); ul.appendChild(li);
+    });
+    $('count').textContent = items.length + (items.length === 1 ? ' nota' : ' notas');
+    $('empty').style.display = items.length ? 'none' : 'block';
+  }
+
+  function add(parsed) {
+    if (items.some(function (i) { return i.key === parsed.key; })) return 'dup';
+    items.unshift(parsed); save(); render(); return 'ok';
+  }
+
+  // ---- leitura da imagem (ZXing-C++ em WebAssembly) ----
+  var zxOpts = { formats: ['Code128'], tryHarder: true, tryRotate: true, maxNumberOfSymbols: 30 };
+  try {
+    ZXingWASM.setZXingModuleOverrides({ locateFile: function (path, prefix) { return path.endsWith('.wasm') ? 'zxing_reader.wasm' : prefix + path; } });
+  } catch (e) {}
+
+  function loadImg(file) {
+    return new Promise(function (res, rej) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); res(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('img')); };
+      img.src = url;
+    });
+  }
+  function imageDataAt(img, max) {
+    var s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    var c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+    var ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    return ctx.getImageData(0, 0, c.width, c.height);
+  }
+  // devolve todas as chaves válidas (44 dígitos) encontradas na foto
+  async function readFile(file) {
+    var img = await loadImg(file), found = {}, list = [];
+    var sizes = [2000, 2800, 1400];
+    for (var i = 0; i < sizes.length; i++) {
+      var res = await ZXingWASM.readBarcodes(imageDataAt(img, sizes[i]), zxOpts);
+      res.forEach(function (r) {
+        var p = parseKey(r.text);
+        if (p && !found[p.key]) { found[p.key] = 1; list.push(p); }
+      });
+    }
+    return list;
+  }
+
+  async function handleFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return;
+    var ok = 0, dup = 0, fail = 0, warn = 0;
+    for (var i = 0; i < files.length; i++) {
+      setStatus('Lendo ' + (i + 1) + ' de ' + files.length + '…');
+      try {
+        var ps = await readFile(files[i]);
+        if (!ps.length) { fail++; continue; }
+        ps.forEach(function (p) {
+          if (add(p) === 'dup') dup++; else { ok++; if (!p.dvok) warn++; }
+        });
+      } catch (e) { fail++; }
+    }
+    var parts = [];
+    if (ok) parts.push(ok + ' lida' + (ok > 1 ? 's' : ''));
+    if (dup) parts.push(dup + ' repetida' + (dup > 1 ? 's' : ''));
+    if (fail) parts.push(fail + ' sem leitura (tente de mais perto, sem reflexo)');
+    if (warn) parts.push(warn + ' com “conferir” (dígito verificador não bateu)');
+    setStatus(parts.join(' · ') || 'Nada lido.', fail || warn ? 'msg-warn' : 'msg-ok');
+  }
+
+
+  // ---- câmera ao vivo ----
+  var video = $('video'), vwrap = $('vwrap'), flashEl = $('flash'), camBtn = $('camToggle');
+  var stream = null, scanning = false, audioCtx = null, flashT = null, dupAt = {};
+  function beep(freq) {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq || 1100; g.gain.value = 0.15;
+      o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.12);
+    } catch (e) {}
+    try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) {}
+  }
+  function showFlash(txt, dup) {
+    flashEl.textContent = txt; flashEl.className = 'flash' + (dup ? ' dup' : ''); flashEl.style.display = 'block';
+    clearTimeout(flashT); flashT = setTimeout(function () { flashEl.style.display = 'none'; }, dup ? 900 : 1400);
+  }
+  var scanCanvas = document.createElement('canvas');
+  var scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+  var liveOpts = { formats: ['Code128'], tryHarder: true, tryRotate: true, maxNumberOfSymbols: 5 };
+  async function loop() {
+    if (!scanning) return;
+    try {
+      if (video.videoWidth) {
+        var s = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+        scanCanvas.width = Math.round(video.videoWidth * s); scanCanvas.height = Math.round(video.videoHeight * s);
+        scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+        var res = await ZXingWASM.readBarcodes(scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height), liveOpts);
+        for (var i = 0; i < res.length; i++) {
+          var p = parseKey(res[i].text);
+          if (!p) continue;
+          if (add(p) === 'ok') { beep(p.dvok ? 1100 : 500); showFlash('✓ ' + p.nf + (p.dvok ? '' : '  (conferir)'), false); }
+          else {
+            var now = Date.now();
+            if (!dupAt[p.key] || now - dupAt[p.key] > 2500) { showFlash('já lida: ' + p.nf, true); beep(400); }
+            dupAt[p.key] = now;
+          }
+        }
+      }
+    } catch (e) {}
+    if (scanning) setTimeout(loop, 120);
+  }
+  async function startCam() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    } catch (e) {
+      setStatus('Não consegui abrir a câmera. Permita o acesso à câmera no Safari (ícone aA, Ajustes do Site) ou use as fotos abaixo.', 'msg-err'); return;
+    }
+    video.srcObject = stream;
+    try { await video.play(); } catch (e) {}
+    try { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {}
+    vwrap.style.display = 'block'; camBtn.textContent = '■ Parar câmera';
+    scanning = true; setStatus('Câmera ligada. Passe pelo código de barras de cada nota.'); loop();
+  }
+  function stopCam() {
+    scanning = false;
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = null; video.srcObject = null; vwrap.style.display = 'none'; camBtn.textContent = '▶ Ligar câmera e bipar';
+    setStatus('Câmera desligada.');
+  }
+  camBtn.onclick = function () { if (scanning) stopCam(); else startCam(); };
+  document.addEventListener('visibilitychange', function () { if (document.hidden && scanning) stopCam(); });
+
+  $('cam').addEventListener('change', function (e) { handleFiles(e.target.files).then(function () { e.target.value = ''; }); });
+  $('gal').addEventListener('change', function (e) { handleFiles(e.target.files).then(function () { e.target.value = ''; }); });
+
+  $('addManual').onclick = function () {
+    var chunks = $('manual').value.split(/[\n,;]+/), ok = 0, bad = 0, dup = 0;
+    chunks.forEach(function (c) {
+      if (!c.replace(/\D/g, '')) return;
+      var p = parseKey(c);
+      if (!p) { bad++; return; }
+      if (add(p) === 'dup') dup++; else ok++;
+    });
+    $('manual').value = '';
+    setStatus(ok + ' adicionada(s)' + (dup ? ', ' + dup + ' repetida(s)' : '') + (bad ? ', ' + bad + ' inválida(s) (precisa ter 44 dígitos)' : ''), bad ? 'msg-warn' : 'msg-ok');
+  };
+
+  $('copy').onclick = function () {
+    // lista na ordem em que foram lidas (mais antiga primeiro)
+    var txt = items.slice().reverse().map(function (i) { return i.nf; }).join('\n');
+    if (!txt) { setStatus('Nada para copiar.', 'msg-warn'); return; }
+    function fallback() {
+      var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta);
+      ta.select(); var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      setStatus(ok ? items.length + ' números copiados.' : 'Não consegui copiar automaticamente.', ok ? 'msg-ok' : 'msg-err');
+    }
+    try {
+      navigator.clipboard.writeText(txt).then(function () { setStatus(items.length + ' números copiados.', 'msg-ok'); }, fallback);
+    } catch (e) { fallback(); }
+  };
+
+  var armed = false;
+  $('clear').onclick = function () {
+    if (!items.length) return;
+    if (!armed) { armed = true; $('clear').textContent = 'Confirmar?'; setTimeout(function () { armed = false; $('clear').textContent = 'Limpar'; }, 3000); return; }
+    items = []; save(); render(); armed = false; $('clear').textContent = 'Limpar'; setStatus('Lista limpa.');
+  };
+
+  render();
+})();
+</script>
+</body>
+</html>
